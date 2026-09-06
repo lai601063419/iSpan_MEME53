@@ -1,0 +1,18 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2712";
+
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            my_gpio_led {
+                compatible = "custom,gpio-led";
+                /* 指向 RP1 的 GPIO 晶片，使用 GPIO 26，高電位觸發 */
+                led-gpios = <&rp1_gpio 26 0>;
+                status = "okay";
+            };
+        };
+    };
+};

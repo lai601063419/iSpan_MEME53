@@ -1,0 +1,26 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2712"; // RPi 5 晶片
+
+    fragment@0 {
+        target = <&spi0>;
+        __overlay__ {
+            status = "okay";
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            spidev@0 {
+                status = "disabled"; // 禁用原生 spidev 避免搶佔
+            };
+
+            rc522@0 {
+                compatible = "nxp,rc522";
+                reg = <0>; // CS0
+                spi-max-frequency = <5000000>; // 5MHz
+                reset-gpios = <&gpio 25 0>; // 新增：GPIO25 控制 Reset (低電位重置 / 高電位工作)
+            };
+        };
+    };
+};

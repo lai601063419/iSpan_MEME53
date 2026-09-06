@@ -1,0 +1,36 @@
+在 Linux Kernel 4.8 導入 Atomic PWM API 之後，控制 PWM 不再像舊版那樣分別呼叫 pwm_config()、pwm_enable()、pwm_set_polarity() 等獨立函式，而是統一使用 struct pwm_state 封裝所有參數，並透過 pwm_apply_might_sleep() 一次性原子更新。  
+
+struct pwm_state {
+    u64 period;              // 脈衝週期 (Period)，單位：奈秒 (ns)
+    u64 duty_cycle;          // 高電平持續時間 (Duty Cycle)，单位：奈秒 (ns)
+    enum pwm_polarity polarity; // 極性 (PWM_POLARITY_NORMAL 或 PWM_POLARITY_INVERTED)
+    bool enabled;            // 輸出致能狀態 (true: 開啟輸出, false: 關閉輸出)
+    bool usage_power;        // 功耗優化標誌 (進階/選填屬性)
+};
+
+成員詳細說明
+
+period (u64)單位：奈秒 ($ns$)。作用：決定 PWM 信號的頻率（$\text{Frequency} = \frac{1,000,000,000}{\text{period}}$）。控制蜂鳴器時，改寫此欄位即可改變音調。 
+
+duty_cycle (u64)單位：奈秒 ($ns$)。作用：決定一個週期內高電平的持續時間。無源蜂鳴器通常將此值設為 period / 2（50% 占空比）以獲得最佳發聲效率。  
+
+polarity (enum pwm_polarity)可選值：PWM_POLARITY_NORMAL (0) 或 PWM_POLARITY_INVERTED (1)。作用：NORMAL 表示一個週期開始時先輸出高電平；INVERTED 則反轉為先輸出低電平。
+
+enabled (bool)可選值：true (開啟) / false (關閉)。  作用：硬體時鐘與信號輸出的總開關。當設為 false 時，PWM 通道會停止發送脈衝並進入省電狀態。
+
+建議設定範圍：20Hz ～ 20,000Hz（人耳聽覺範圍）。
+
+常用音符頻率：中央 C (C4) 約為 262Hz，中音 A (A4) 約為 440Hz，高音 C (C5) 約為 523Hz。
+
+
+以下是蜂鳴器無法在高頻（超過 20kHz）正常工作的原因：
+
+1. 物理機械限制 (Mechanical Bandwidth)壓電片/壓頭振動限制：無源蜂鳴器內部通常是壓電陶瓷片（Piezo）或電磁式金屬振膜。這些組件有其物理質量的慣性與固有諧振頻率（Resonant Frequency）。高頻衰減：多數市售微型蜂鳴器的最佳諧振頻率落在 2kHz ～ 4kHz 之間。當輸入頻率超過 10kHz 以上時，振膜會因為機械阻尼過大而無法跟上高頻驅動信號，輸出音量會急劇衰減甚至幾乎完全無聲。
+
+2. 電氣與驅動限制 (Electrical Characteristics)寄生電容效應：壓電式蜂鳴器本質上等同於一個電容器（Capacitive Load）。高頻下，電容阻抗（$X_C = \frac{1}{2\pi f C}$）會大幅降低，這會導致：電流急劇上升：可能造成驅動電晶體或 GPIO 負擔過大。波形失真：信號上升/下降時間（Rise/Fall Time）跟不上，PWM 方波會被拉圓變成充放電波形，無法有效帶動振動。GPIO 與硬體 PWM 限制：雖然 Raspberry Pi 5 的 PWM 暫存器能輸出高達幾十 MHz 的 PWM 波形，但中間的驅動電路（如電晶體、MOSFET）以及蜂鳴器本體的寄生電容會成為低通濾波器（Low-pass Filter），直接濾掉高頻成分。
+
+頻率範圍, 蜂鳴器表現,  實際用途
+< 100 Hz, 聲音低沉、發悶，振膜可能發出咔噠聲 (Clicking),  不建議
+"500 Hz ～ 4,000 Hz", 最佳發聲區（音量最大、聲音最清晰）, 播放音樂、警報聲、提示音
+"4,000 Hz ～ 10,000 Hz",  聲音極為刺耳、音量明顯衰減, 特殊高音提示
+"> 20,000 Hz",  基本上完全無聲，且振膜與電路負荷過大, 無法作為超音波發射器使用

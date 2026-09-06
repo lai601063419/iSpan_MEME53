@@ -1,0 +1,17 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2712";
+
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            rpi5_pwm_node {
+                compatible = "raspberrypi,rpi5-pwm-custom";
+                pwms = <&pwm 0 20000000 0>;
+                status = "okay";
+            };
+        };
+    };
+};

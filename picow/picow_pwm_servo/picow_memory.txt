@@ -1,0 +1,148 @@
+在 RP2040 的架構設計中，**Atomic（原子操作）、PADS BANK0、IO BANK0 與 PWM 控制器** 這四個模組是實現硬體直寫（MMIO）的核心機制。
+
+以下依據 **Raspberry Pi RP2040 Datasheet** 的規格與暫存器手冊，為你詳細說明這四個模組的功能與設計邏輯：
+
+---
+
+## 1. RP2040 Atomic 操作（原子記憶體映射）
+
+在傳統微控制器（如 ARM Cortex-M0）中，如果你想改變暫存器的某個 Bit（例如把 Bit 0 設為 1，但保留其他 Bit），必須經過 **「讀取 $\rightarrow$ 修改 $\rightarrow$ 寫回 (Read-Modify-Write)」** 三個步驟。如果此時發生中斷（Interrupt）或另一個 CPU 核心（Core 1）同時修改該暫存器，就會造成資料競爭與錯誤。
+
+RP2040 在硬體匯流排（Bus Fabric）層面導入了 **Atomic Aliases（原子操作別名位址）**，將每個周邊暫存器的記憶體位址映射出 4 種模式：
+
+```
+Base Address + 0x0000 -> 普通讀寫 (Normal Read/Write)
+Base Address + 0x1000 -> 原子異或 (Atomic Bit XOR)
+Base Address + 0x2000 -> 原子置位 (Atomic Bit SET)
+Base Address + 0x3000 -> 原子清零 (Atomic Bit CLEAR)
+
+```
+
+### 運作原理與優勢
+
+* **硬體單週期完成**：當你向 `Base + 0x3000` 寫入 `(1 << 14)` 時，硬體會**自動且強制**只將 Bit 14 清零，其他位元完全不受影響。
+* **無需鎖定與中斷保護**：不需要關閉中斷或使用 `__disable_irq()`，也不需要做位元遮罩運算 (`&` 或 `|`)，雙核心競爭時絕對安全。
+* **範例（RESETS 模組）**：
+* `RESETS_BASE` 為 `0x4000C000`
+* 解除 PWM 重置（Bit 14 清零）：寫入 `0x4000C000 + 0x3000 = 0x4000F000`，資料寫 `(1 << 14)`。
+
+
+
+---
+
+## 2. PADS BANK0（腳位電氣屬性控制器）
+
+**基底位址：`0x4001C000**`
+
+PADS BANK0 負責控制 RP2040 實體 GPIO 腳位的**物理電氣特性**（Pin Electrical Configurations）。每一個 GPIO 腳位都有一個專屬的 32-bit Pad 控制暫存器（GPIO15 的 Offset 為 `0x040`）。
+
+### 關鍵位元定義（Bit Field）
+
+| Bit | 名稱 | 預設值 | 功能說明 |
+| --- | --- | --- | --- |
+| **bit 7** | `OD` (Output Disable) | `0` | 1：禁用輸出（強制變成高阻抗 Input） |
+| **bit 6** | `IE` (Input Enable) | `1` | 1：允許輸入緩衝器運作（讀取腳位電位） |
+| **bit 5:4** | `DRIVE` (Drive Strength) | `0x1` (4mA) | 腳位推圖電流上限：`0`=2mA, `1`=4mA, `2`=8mA, `3`=12mA |
+| **bit 3** | `PUE` (Pull-up Enable) | `0` | 1：開啟內部上拉電阻 |
+| **bit 2** | `PDE` (Pull-down Enable) | `1` / `0` | 1：開啟內部下拉電阻 |
+| **bit 1** | `SCHMITT` | `1` | 1：開啟施密特觸發器（降噪與訊號整形） |
+| **bit 0** | `SLEWFAST` | `0` | 0：慢速轉換率（預設，減少 EMI）；1：快速轉換率 |
+
+* **預設值分析**：上電時暫存器數值通常為 `0x50` 或 `0x5A`（`IE=1`, `DRIVE=4mA`）。這也是為什麼大部分情況下，不特別寫入 PADS 暫存器，訊號也能正常輸出的原因。
+
+---
+
+## 3. IO BANK0（腳位多工功能選擇）
+
+**基底位址：`0x40014000**`
+
+IO BANK0 負責決定 GPIO 腳位要**連接到晶片內部的哪一個硬體周邊**（Pin Multiplexing / MUX）。每一個 GPIO 腳位有一個 `CTRL` 暫存器（GPIO15_CTRL Offset 為 `0x07C`）。
+
+### 關鍵欄位：`FUNCSEL` (Bit 4:0)
+
+RP2040 的每個 GPIO 腳位都可以切換成多種功能（Function Select）：
+
+| FUNCSEL 值 | 功能名稱 | 說明 |
+| --- | --- | --- |
+| **0** | `JTAG` / `SPI` | 特定腳位之偵錯或 SPI 介面 |
+| **1** | `UART` | 串口功能 |
+| **2** | `I2C` | I2C 匯流排功能 |
+| **3** | `PWM` (A/B) | PWM 控制器輸出 (按 Slice/Chan 分配) |
+| **4** | **`PWM`** | **通用 PWM 模式（GPIO 15 對應 Slice 7 Channel B）** |
+| **5** | `SIO` | 軟體直接控制 (GPIO Bit-Banging, `gpio_get/set`) |
+| **6..8** | `PIO0` / `PIO1` | 可程式化 I/O 模組 (Programmable I/O) |
+| **9** | `GPCK` | 系統時脈輸出 |
+
+* **軟體關鍵動作**：只要把 `GPIO15_CTRL` 的 `FUNCSEL` 寫入 `4`，GPIO 15 的實體腳位控制權就會從 SIO（CPU 手動高低電位）移交給 PWM Slice 7 硬體電路。
+
+---
+
+## 4. PWM 控制器 (Pulse Width Modulator)
+
+**基底位址：`0x40050000**`
+
+RP2040 內建 **8 個獨立的 PWM Slice**（Slice 0 ~ 7），每個 Slice 包含 **2 個輸出 Channel**（Channel A 與 Channel B），總共可提供 16 路 PWM 輸出：
+
+* **GP15 映射位址**：$15 \div 2 = 7$（Slice 7），$15 \bmod 2 = 1$（Channel B）。
+
+### Slice 暫存器結構與 Offset (以 Slice 7 為例：Base + `0x8C`)
+
+```
+0x4005008C + 0x00 -> CSR (Control & Status)
+0x4005008C + 0x04 -> DIV (Clock Divider)
+0x4005008C + 0x08 -> CTR (Counter)
+0x4005008C + 0x0C -> CC  (Compare / Duty Cycle)
+0x4005008C + 0x10 -> TOP (Counter Wrap)
+
+```
+
+#### A. `CSR` (控制暫存器 - Offset `0x00`)
+
+* **Bit 0 (`EN`)**：1 = 啟動該 PWM Slice 計數器；0 = 停止計數。
+* **Bit 1 (`PH_CORRECT`)**：0 = 邊緣對齊（Edge-aligned, 常用）；1 = 相位對齊（Phase-aligned）。
+
+#### B. `DIV` (時脈分頻暫存器 - Offset `0x04`)
+
+采用 **8.4 定點數格式（Fixed-point）**：
+
+* **Bit 11:4 (`INT`)**：8 位元整數分頻值（1 ~ 255）。
+* **Bit 3:0 (`FRAC`)**：4 位元小數分頻值（0 ~ 15，即 N/16）。
+* **計算範例**：若系統主時脈為 $125\text{ MHz}$，要得到 $1\text{ MHz}$ 的計數頻率：
+
+$$\text{分頻值} = 125 \implies \text{寫入暫存器 } (125 \ll 4) = \text{0x000007D0}$$
+
+
+
+#### C. `TOP` (週期極限暫存器 - Offset `0x10`)
+
+* 16 位元暫存器（0 ~ 65535）。
+* 當計數器 `CTR` 累加到 `TOP` 的數值時，會在下一個時脈週期歸零並重新計數。
+* **PWM 輸出頻率公式**：
+
+$$f_{\text{PWM}} = \frac{f_{\text{sys}}}{\text{DIV} \times (\text{TOP} + 1)}$$
+
+
+
+#### D. `CC` (比較/脈寬暫存器 - Offset `0x0C`)
+
+* **Bit 15:0 (`A`)**：Channel A 的脈衝觸發點。
+* **Bit 31:16 (`B`)**：Channel B 的脈衝觸發點。
+* **邏輯**：當 `CTR` $<$ `CC.B` 時，GP15 輸出**高電位**；當 `CTR` $\ge$ `CC.B` 時，GP15 轉為**低電位**。藉由調整 `CC` 的數值即可精準控制 PWM 的 Duty Cycle（佔空比）。
+
+---
+
+## 總結：四者協同運作流程
+
+當你在程式中操控 GP15 產生 PWM 訊號時，RP2040 硬體的內部運作順序為：
+
+```
+[1. Atomic 操作] ----> 解除 RESETS 暫存器的 Bit 14，喚醒 PWM 模組
+                             |
+[2. PADS BANK0] -----> 設定 GP15 的驅動能力 (4mA) 與輸入緩衝 (IE=1)
+                             |
+[3. IO BANK0] -------> 將 GP15 的 FUNCSEL 設為 4，把腳位主導權交給 PWM
+                             |
+[4. PWM 控制器] -----> DIV 計算時脈分頻、TOP 設定週期 (50Hz / 頻率)、
+                       CC 設定高電位時間，啟動 CSR.EN 開始輸出波形
+
+```
