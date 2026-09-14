@@ -47,7 +47,8 @@ pico_enable_stdio_usb(picow_pwm_servo 1)
 target_link_libraries(picow_pwm_servo
         pico_stdlib 
         hardware_pwm 
-        pico_cyw43_arch_none)
+        pico_cyw43_arch_none
+        hardware_sync)
 
 # Add the standard include files to the build
 target_include_directories(picow_pwm_servo PRIVATE

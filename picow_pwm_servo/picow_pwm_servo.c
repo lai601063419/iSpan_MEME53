@@ -4,6 +4,7 @@
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "pico/cyw43_arch.h"
+#include "hardware/sync.h"
 
 
 #define RESETS_BASE             0x4000C000
@@ -68,6 +69,8 @@ void set_servo_angle_mmio(float degree) {
 
 bool timer_callback(struct repeating_timer *t) {
     servo_lock = 1;
+    __dmb();
+
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
     set_servo_angle_mmio(0.0f);
     SIO_GPIO_OUT_SET = (1u << 22);
@@ -86,6 +89,8 @@ int main() {
     }
 
     RESETS_RESET_CLR = RESETS_PWM_BIT;
+    __dsb();
+
     while (!(RESETS_RESET_DONE & RESETS_PWM_BIT)) {
         // 等待 Reset 完成
     }
@@ -104,6 +109,7 @@ int main() {
 
     set_servo_angle_mmio(0.0f); // 設定初始 0 度 (CC: 0x01F40000)
 
+    __dsb();
     PWM_CH7_CSR = PWM_CSR_EN_BIT;       // 啟動 PWM
 
     GPIO22_CTRL = GPIO_FUNC_SIO;
